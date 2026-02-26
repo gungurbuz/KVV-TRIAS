@@ -1,35 +1,37 @@
 package org.gungurbuz;
 
-import javax.xml.parsers.DocumentBuilderFactory;
 import org.w3c.dom.*;
 import org.xml.sax.InputSource;
 
+import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.StringReader;
 
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.time.LocalDateTime;
+
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-
-import javax.xml.parsers.DocumentBuilderFactory;
-
-import org.w3c.dom.*;
 
 public class TriasArrivalsDisplay {
 	
 	private static final String TRIAS_NS = "http://www.vdv.de/trias";
-	private static final String API_KEY = System.getenv("TRIAS_API_KEY");;
+	private static final String API_KEY = System.getenv("TRIAS_API_KEY");
+	
 	static {
 		if (API_KEY == null || API_KEY.isBlank()) {
-			throw new RuntimeException(
-					"TRIAS_API_KEY not set!");
+			throw new RuntimeException("TRIAS_API_KEY not set!");
 		}
 	}
-	private static final String STOP_PLACE_REF = "de:08212:1103:2:2";
-	private static final String URL =
-			"https://projekte.kvv-efa.de/guerbueztrias/trias";
+	
+	private static final String STOP_POINT_REF = "de:08212:1103:2:2";
+	private static final String URL = "https://projekte.kvv-efa.de/guerbueztrias/trias";
+	
+	// Output format requested: HH:MM (in Java that's HH:mm)
+	private static final DateTimeFormatter HHMM = DateTimeFormatter.ofPattern("HH:mm");
 	
 	public static void main(String[] args) throws Exception {
 		
@@ -51,83 +53,100 @@ public class TriasArrivalsDisplay {
 	
 	private static String buildRequest() {
 		
-		String timestamp = LocalDateTime.now()
-				.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+		// TRIAS servers typically accept ISO timestamps; keeping your current format.
+		String timestamp = java.time.LocalDateTime.now()
+				.format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME);
 		
 		return """
-				<Trias version="1.1"
-				       xmlns="http://www.vdv.de/trias"
-				       xmlns:siri="http://www.siri.org.uk/siri">
-				    <ServiceRequest>
-				        <siri:RequestTimeStamp>%s</siri:RequestTimeStamp>
-				        <siri:RequestorRef>%s</siri:RequestorRef>
-				        <RequestPayload>
-				            <StopEventRequest>
-				                <Location>
-				                    <LocationRef>
-				                        <StopPointRef>%s</StopPointRef>
-				                    </LocationRef>
-				                </Location>
-				                <Params>
-				                    <NumberOfResults>2</NumberOfResults>
-				                    <StopEventType>arrival</StopEventType>
-				                </Params>
-				            </StopEventRequest>
-				        </RequestPayload>
-				    </ServiceRequest>
-				</Trias>
-				""".formatted(timestamp, API_KEY, STOP_PLACE_REF);
+                <Trias version="1.1"
+                       xmlns="http://www.vdv.de/trias"
+                       xmlns:siri="http://www.siri.org.uk/siri">
+                    <ServiceRequest>
+                        <siri:RequestTimeStamp>%s</siri:RequestTimeStamp>
+                        <siri:RequestorRef>%s</siri:RequestorRef>
+                        <RequestPayload>
+                            <StopEventRequest>
+                                <Location>
+                                    <LocationRef>
+                                        <StopPointRef>%s</StopPointRef>
+                                    </LocationRef>
+                                </Location>
+                                <Params>
+                                    <NumberOfResults>2</NumberOfResults>
+                                    <StopEventType>departure</StopEventType>
+                                </Params>
+                            </StopEventRequest>
+                        </RequestPayload>
+                    </ServiceRequest>
+                </Trias>
+                """.formatted(timestamp, API_KEY, STOP_POINT_REF);
 	}
 	
 	private static void parseAndDisplay(String xml) throws Exception {
 		
-		// Helpful debug: if the server sent an error, you’ll see it right away.
 		if (xml == null || xml.isBlank()) {
 			System.out.println("Empty HTTP response body.");
 			return;
 		}
 		
-		// Parse XML WITH namespaces enabled
 		DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
 		dbf.setNamespaceAware(true);
 		
 		Document doc = dbf.newDocumentBuilder()
 				.parse(new InputSource(new StringReader(xml)));
 		
-		// Find StopEvent elements using namespace
 		NodeList stopEvents = doc.getElementsByTagNameNS(TRIAS_NS, "StopEvent");
 		
-		// If nothing found, print the first ~500 chars so you can see what came back.
 		if (stopEvents.getLength() == 0) {
 			System.out.println("No <StopEvent> found. First part of response:\n");
 			System.out.println(xml.substring(0, Math.min(500, xml.length())));
 			return;
 		}
 		
-		System.out.println("\nUpcoming Arrivals:\n");
+		System.out.println("\nUpcoming Departures:\n");
 		
 		for (int i = 0; i < stopEvents.getLength(); i++) {
 			Element stopEvent = (Element) stopEvents.item(i);
 			
-			// Line name is usually PublishedLineName/Text
 			String line = firstTextOf(stopEvent, "PublishedLineName");
-			
-			// DestinationText/Text is commonly used for direction
 			String direction = firstTextOf(stopEvent, "DestinationText");
 			
-			// Arrival time is often nested; try EstimatedTime first, then TimetabledTime
-			String time = firstTextOf(stopEvent, "EstimatedTime");
-			if (time == null) time = firstTextOf(stopEvent, "TimetabledTime");
+			String schedRaw = firstTextOf(stopEvent, "TimetabledTime");
+			String realRaw  = firstTextOf(stopEvent, "EstimatedTime");
 			
-			// If you only want S1/S11:
+			String sched = toLocalHHmm(schedRaw);
+			String real  = toLocalHHmm(realRaw);
+			
 			if (line == null) continue;
 			if (!line.equals("S1") && !line.equals("S11")) continue;
+			
+			String timeText;
+			if (sched == null && real == null) {
+				timeText = "--:--";
+			} else if (real == null || real.equals(sched)) {
+				timeText = sched != null ? sched : real;
+			} else {
+				timeText = sched + " → " + real;  // scheduled → real
+			}
 			
 			System.out.printf("%s → %s  %s%n",
 					line,
 					direction != null ? direction : "?",
-					time != null ? time : "no time");
+					timeText);
 		}
+	}
+	
+	/**
+	 * Convert TRIAS time (usually ISO 8601 with Z or +hh:mm) to local HH:mm.
+	 */
+	private static String toLocalHHmm(String triasTime) {
+		if (triasTime == null || triasTime.isBlank()) return null;
+		
+		Instant instant = Instant.parse(triasTime.trim());
+		
+		return DateTimeFormatter.ofPattern("HH:mm")
+				.withZone(ZoneId.systemDefault())
+				.format(instant);
 	}
 	
 	/**
@@ -141,16 +160,13 @@ public class TriasArrivalsDisplay {
 		
 		Element e = (Element) nodes.item(0);
 		
-		// Common TRIAS pattern: <Something><Text>value</Text></Something>
 		NodeList textNodes = e.getElementsByTagNameNS(TRIAS_NS, "Text");
 		if (textNodes.getLength() > 0) {
 			String v = textNodes.item(0).getTextContent();
 			return v != null ? v.trim() : null;
 		}
 		
-		// Fallback: any text content
 		String v = e.getTextContent();
 		return v != null ? v.trim() : null;
 	}
-	
 }
