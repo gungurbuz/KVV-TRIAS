@@ -74,4 +74,4 @@ List.of("S1", "S11")
 - i love you KVV forever and ever...
 
 ## License
-This project is licensed under the  License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Creative Commons Zero v1.0 Universal License - see the [LICENSE](LICENSE) file for details.
