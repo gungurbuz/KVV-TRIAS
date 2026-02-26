@@ -15,14 +15,16 @@ public class DepartureBoardApp {
 	private static final String STOP_POINT_REF = "de:08212:1103:2:2";
 	
 	// Filter only these lines (set to List.of() to show all)
-	private static final List<String> ALLOWED_LINES = List.of("S1", "S11");
+	private static final List<String> ALLOWED_LINES = List.of();
 	
 	private static volatile boolean running = true;
 	
 	public static void main(String[] args) throws Exception {
 		
 		String apiKey = System.getenv("TRIAS_API_KEY");
-		if (apiKey == null || apiKey.isBlank()) throw new RuntimeException("TRIAS_API_KEY not set!");
+		if (apiKey == null || apiKey.isBlank()) {
+			throw new RuntimeException("TRIAS_API_KEY not set!");
+		}
 		
 		TriasClient client = new TriasClient(URL, apiKey);
 		TriasStopEventParser parser = new TriasStopEventParser();
@@ -30,47 +32,58 @@ public class DepartureBoardApp {
 		
 		Runtime.getRuntime().addShutdownHook(new Thread(() -> running = false));
 		
+		// Immediate first refresh
+		try {
+			updateDisplay(service);
+		} catch (Exception e) {
+			System.out.println("Update failed: " + e.getMessage());
+		}
+		
+		// Then align to the next system minute and refresh every minute
 		while (running) {
-			// Sleep until the next exact boundary (:00 or :30)
 			sleepUntilNextMinuteBoundary();
 			
 			try {
-				clearConsole();
-				System.out.println("Last update: " + LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss")));
-				System.out.println();
-				
-				List<DepartureRow> rows = service.loadDepartures(STOP_POINT_REF, 10, ALLOWED_LINES);
-				
-				System.out.println("Upcoming Departures:");
-				System.out.println();
-				
-				for (DepartureRow r : rows) {
-					String timeText;
-					if (r.schedHHmm() == null && r.realHHmm() == null) {
-						timeText = "--:--";
-					} else if (r.realHHmm() == null || r.realHHmm().equals(r.schedHHmm())) {
-						timeText = r.schedHHmm() != null ? r.schedHHmm() : r.realHHmm();
-					} else {
-						timeText = r.schedHHmm() + " -> " + r.realHHmm();
-					}
-					
-					System.out.printf("%-4s -> %-30s %s%n",
-							r.line(),
-							r.direction(),
-							timeText);
-				}
-				
+				updateDisplay(service);
 			} catch (Exception e) {
-				// Don’t exit; try again at next boundary
 				System.out.println("Update failed: " + e.getMessage());
 			}
 		}
 	}
 	
+	private static void updateDisplay(DepartureBoardService service) throws Exception {
+		clearConsole();
+		
+		System.out.println("Last update: " + LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss")));
+		System.out.println();
+		
+		List<DepartureRow> rows = service.loadDepartures(STOP_POINT_REF, 10, ALLOWED_LINES);
+		
+		System.out.println("Upcoming Departures:");
+		System.out.println();
+		
+		for (DepartureRow r : rows) {
+			String timeText;
+			if (r.schedHHmm() == null && r.realHHmm() == null) {
+				timeText = "--:--";
+			} else if (r.realHHmm() == null || r.realHHmm().equals(r.schedHHmm())) {
+				timeText = r.schedHHmm() != null ? r.schedHHmm() : r.realHHmm();
+			} else {
+				timeText = r.schedHHmm() + " -> " + r.realHHmm();
+			}
+			
+			System.out.printf("%-4s -> %-30s %s%n",
+					r.line(),
+					r.direction(),
+					timeText);
+		}
+	}
+	
 	/**
-	 * Sleeps until the next wall-clock boundary where seconds == 0 or 30, and nanos == 0.
-	 * Example: if now is 12:00:12.3, sleep to 12:00:30.0
-	 *          if now is 12:00:30.1, sleep to 12:01:00.0
+	 * Sleeps until the next full minute boundary (seconds == 0, nanos == 0).
+	 * Example:
+	 *   12:00:12 -> 12:01:00
+	 *   12:00:59.5 -> 12:01:00
 	 */
 	private static void sleepUntilNextMinuteBoundary() throws InterruptedException {
 		ZoneId zone = ZoneId.systemDefault();
@@ -94,6 +107,7 @@ public class DepartureBoardApp {
 			if (Duration.between(ZonedDateTime.now(zone), target).toMillis() <= 0) return;
 		}
 	}
+	
 	private static void clearConsole() {
 		// ANSI clear screen + cursor home. If your console doesn’t support ANSI, remove this.
 		System.out.print("\u001b[2J\u001b[H");
